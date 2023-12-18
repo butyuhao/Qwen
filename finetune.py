@@ -16,9 +16,27 @@ from transformers import Trainer, GPTQConfig, deepspeed
 from transformers.trainer_pt_utils import LabelSmoother
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from accelerate.utils import DistributedType
+from model_training.custom_datasets import DialogueDataCollator
+from utils_oa import get_dataset
+import yaml
+from pathlib import Path
 
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
+
+def read_yamls(dir):
+    conf = {}
+    no_conf = True
+
+    for config_file in Path(dir).glob("**/*.yaml"):
+        no_conf = False
+        with config_file.open("r") as f:
+            conf.update(yaml.safe_load(f))
+
+    if no_conf:
+        print(f"WARNING: No yaml files found in {dir}")
+
+    return conf
 
 
 @dataclass
@@ -266,6 +284,23 @@ def train():
         lora_args,
     ) = parser.parse_args_into_dataclasses()
 
+    # read config from configs
+    conf = read_yamls("./configs/")
+    conf = conf["llama2-7b-pretrain2"]
+
+    def _strtobool(x):
+        from distutils.util import strtobool
+        return bool(strtobool(x))
+
+    for key, value in conf.items():
+        type_ = type(value) if value is not None else str
+        if type_ == bool:
+            type_ = _strtobool
+        parser.add_argument(f"--{key}", type=type_, default=value)
+        # Allow --no-{key}  to remove it completely
+        parser.add_argument(f"--no-{key}", dest=key, action="store_const", const=None)
+
+
     # This serves for single-gpu qlora.
     if getattr(training_args, 'deepspeed', None) and int(os.environ.get("WORLD_SIZE", 1))==1:
         training_args.distributed_state.distributed_type = DistributedType.DEEPSPEED
@@ -341,9 +376,12 @@ def train():
             model.enable_input_require_grads()
 
     # Load data
-    data_module = make_supervised_data_module(
-        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length
-    )
+    # data_module = make_supervised_data_module(
+    #     tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length
+    # )
+    from utils_oa import get_dataset
+    data_module = get_dataset(training_args)
+    data_collator = DialogueDataCollator(tokenizer=tokenizer, max_len=training_args.model_max_length)
 
     # Start trainner
     trainer = Trainer(
